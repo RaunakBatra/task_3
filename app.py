@@ -11,9 +11,6 @@ import uvicorn
 import os
 
 
-# ----------------------------------------------------
-# 1️⃣ Initialize FastAPI app
-# ----------------------------------------------------
 app = FastAPI(title="Food Recommendation System")
 
 app.add_middleware(
@@ -24,9 +21,7 @@ app.add_middleware(
 )
 
 
-# ----------------------------------------------------
-# 2️⃣ Load dataset
-# ----------------------------------------------------
+
 df = pd.read_csv("final_recipe.csv")
 
 df["combined_text"] = (
@@ -40,16 +35,12 @@ df["combined_text"] = (
 df["ingredients_list"] = df["ingredients_list"].astype(str)
 
 
-# ----------------------------------------------------
-# 3️⃣ TF-IDF vectorizer
-# ----------------------------------------------------
+
 tfidf = TfidfVectorizer(stop_words='english')
 tfidf_matrix = tfidf.fit_transform(df["ingredients_list"])
 
 
-# ----------------------------------------------------
-# 4️⃣ Veg/Non-Veg classification
-# ----------------------------------------------------
+
 nonveg_keywords = ['chicken','mutton','egg','fish','pork','beef','bacon','meat','turkey','lamb','shrimp']
 
 def get_veg_nonveg(name, ingredients):
@@ -59,9 +50,7 @@ def get_veg_nonveg(name, ingredients):
 df["veg_nonveg"] = df.apply(lambda x: get_veg_nonveg(x["recipe_name"], x["ingredients_list"]), axis=1)
 
 
-# ----------------------------------------------------
-# 5️⃣ Cuisine classification
-# ----------------------------------------------------
+
 cuisine_keywords = {
     'Indian': ['paneer','masala','biryani','dal','curry','roti','paratha','sambar','tikka','idli','dosa'],
     'Chinese': ['noodle','fried rice','manchurian','schezwan','spring roll','momo'],
@@ -87,9 +76,6 @@ def detect_cuisine_fuzzy(name, ingredients, threshold=80):
 df["cuisine_type"] = df.apply(lambda x: detect_cuisine_fuzzy(x["recipe_name"], x["ingredients_list"]), axis=1)
 
 
-# ----------------------------------------------------
-# 6️⃣ Region classification
-# ----------------------------------------------------
 region_keywords = {
     'North Indian': ['paneer','butter chicken','naan','dal makhani','paratha'],
     'South Indian': ['idli','dosa','sambar','rasam','pongal'],
@@ -110,9 +96,7 @@ def detect_region_rapid(name, ingredients, threshold=80):
 df["region_type"] = df.apply(lambda x: detect_region_rapid(x["recipe_name"], x["ingredients_list"]), axis=1)
 
 
-# ----------------------------------------------------
-# 7️⃣ Recommendation functions
-# ----------------------------------------------------
+
 def recommend_food(input_value, top_n=10, by='name'):
     if by == 'name':
         all_recipes = df['recipe_name'].str.lower().tolist()
@@ -181,9 +165,7 @@ def recommend_pair(food_name, top_n=5):
     ]]
 
 
-# ----------------------------------------------------
-# 8️⃣ API Endpoints
-# ----------------------------------------------------
+# --------
 @app.get("/")
 def home():
     return {"message": "🍴 Food Recommendation API is running successfully!"}
@@ -201,7 +183,7 @@ def recommend_food_advanced(
     try:
         df_filtered = df.copy()
 
-        # 🥗 Apply filters
+        
         if veg_nonveg:
             df_filtered = df_filtered[df_filtered["veg_nonveg"].str.lower() == veg_nonveg.lower()]
         if cuisine_type:
@@ -216,7 +198,7 @@ def recommend_food_advanced(
         if df_filtered.empty:
             return {"message": "No recipes found with the given filters."}
 
-        # 🍽️ Recommend based on food name
+        
         if food_name:
             df_filtered = df_filtered.reset_index(drop=True)
             tfidf = TfidfVectorizer(stop_words="english")
@@ -233,7 +215,7 @@ def recommend_food_advanced(
             indices = [i[0] for i in sim_scores]
             results = df_filtered.iloc[indices]
         else:
-            # 🎲 Random sample if no name provided
+            
             results = df_filtered.sample(min(6, len(df_filtered)))
 
         return results[[
@@ -268,9 +250,6 @@ def recommend_pair_endpoint(food_name: str):
     return recommendations.to_dict(orient='records')
 
 
-# ----------------------------------------------------
-# 9️⃣ Run app
-# ----------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("app:app", host="0.0.0.0", port=port)
