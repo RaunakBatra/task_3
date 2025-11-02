@@ -1,54 +1,43 @@
-# app.py
+import os
 import pandas as pd
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from rapidfuzz import fuzz, process
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import linear_kernel, euclidean_distances
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+from rapidfuzz import fuzz, process
 import uvicorn
-import os
-
+from collections import Counter
+import re
 
 app = FastAPI(title="Food Recommendation System")
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
-
 
 
 df = pd.read_csv("final_recipe.csv")
-
-df["combined_text"] = (
-    df["recipe_name"].fillna('') + " " +
-    df["ingredients_list"].fillna('') + " " +
-    df["cuisine_type"].fillna('') + " " +
-    df["region_type"].fillna('') + " " +
-    df["veg_nonveg"].fillna('')
-)
-
-df["ingredients_list"] = df["ingredients_list"].astype(str)
+nutrition_features = ['calories', 'protein', 'fat', 'carbohydrates']
+df[nutrition_features] = df[nutrition_features].fillna(df[nutrition_features].mean())
 
 
-
-tfidf = TfidfVectorizer(stop_words='english')
-tfidf_matrix = tfidf.fit_transform(df["ingredients_list"])
-
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(df[nutrition_features])
+kmeans = KMeans(n_clusters=8, random_state=42)
+df['nutrition_cluster'] = kmeans.fit_predict(X_scaled)
 
 
 nonveg_keywords = ['chicken','mutton','egg','fish','pork','beef','bacon','meat','turkey','lamb','shrimp']
-
-def get_veg_nonveg(name, ingredients):
-    text = str(name).lower() + " " + str(ingredients).lower()
-    return "Non-Veg" if any(word in text for word in nonveg_keywords) else "Veg"
-
-df["veg_nonveg"] = df.apply(lambda x: get_veg_nonveg(x["recipe_name"], x["ingredients_list"]), axis=1)
-
+df["veg_nonveg"] = df.apply(
+    lambda x: "Non-Veg" if any(word in str(x["recipe_name"]).lower() + " " + str(x["ingredients_list"]).lower() for word in nonveg_keywords) else "Veg",
+    axis=1
+)
 
 
 cuisine_keywords = {
@@ -60,10 +49,10 @@ cuisine_keywords = {
     'Japanese': ['sushi','ramen','tempura','miso','teriyaki'],
     'French': ['croissant','souffle','crepe','baguette','ratatouille'],
     'Thai': ['pad thai','green curry','tom yum','lemongrass'],
-    'Korean': ['kimchi','bibimbap','bulgogi','kimbap','gochujang'],
+    'Korean': ['kimchi','bibimbap','bulgogi','kimbap','gochujang']
 }
 
-def detect_cuisine_fuzzy(name, ingredients, threshold=80):
+def detect_cuisine(name, ingredients):
     text = str(name).lower() + " " + str(ingredients).lower()
     best_match, best_score = None, 0
     for cuisine, keywords in cuisine_keywords.items():
@@ -71,10 +60,9 @@ def detect_cuisine_fuzzy(name, ingredients, threshold=80):
             score = fuzz.partial_ratio(word, text)
             if score > best_score:
                 best_match, best_score = cuisine, score
-    return best_match if best_score >= threshold else 'Other'
+    return best_match if best_score >= 80 else 'Other'
 
-df["cuisine_type"] = df.apply(lambda x: detect_cuisine_fuzzy(x["recipe_name"], x["ingredients_list"]), axis=1)
-
+df["cuisine_type"] = df.apply(lambda x: detect_cuisine(x["recipe_name"], x["ingredients_list"]), axis=1)
 
 region_keywords = {
     'North Indian': ['paneer','butter chicken','naan','dal makhani','paratha'],
@@ -83,107 +71,71 @@ region_keywords = {
     'West Indian': ['dhokla','thepla','vada pav','pav bhaji','poha']
 }
 
-def detect_region_rapid(name, ingredients, threshold=80):
-    text = (str(name) + " " + str(ingredients)).lower()
+def detect_region(name, ingredients):
+    text = str(name).lower() + " " + str(ingredients).lower()
     best_match, best_score = None, 0
     for region, keywords in region_keywords.items():
         for word in keywords:
             score = fuzz.partial_ratio(word, text)
             if score > best_score:
                 best_match, best_score = region, score
-    return best_match if best_score >= threshold else 'Other Region'
+    return best_match if best_score >= 80 else 'Other Region'
 
-df["region_type"] = df.apply(lambda x: detect_region_rapid(x["recipe_name"], x["ingredients_list"]), axis=1)
-
-
-
-def recommend_food(input_value, top_n=10, by='name'):
-    if by == 'name':
-        all_recipes = df['recipe_name'].str.lower().tolist()
-        best_match, score, _ = process.extractOne(input_value.lower(), all_recipes)
-        idx = df[df['recipe_name'].str.lower() == best_match].index[0]
-    elif by == 'url':
-        idx = df[df['image_url'] == input_value].index[0]
-    else:
-        return pd.DataFrame()
-
-    cosine_sim = cosine_similarity(tfidf_matrix[idx], tfidf_matrix).flatten()
-    similar_indices = cosine_sim.argsort()[-top_n-1:-1][::-1]
-    return df.iloc[similar_indices][['recipe_id','recipe_name','image_url','cuisine_type','region_type','veg_nonveg','aver_rate']]
+df["region_type"] = df.apply(lambda x: detect_region(x["recipe_name"], x["ingredients_list"]), axis=1)
 
 
-def recommend_by_nutrition(calories=None, protein=None, fat=None, carbs=None, top_n=10):
-    df_copy = df.copy()
-    df_copy["nutrition_score"] = 0
-
-    if calories:
-        df_copy["nutrition_score"] += abs(df_copy["calories"] - calories)
-    if protein:
-        df_copy["nutrition_score"] += abs(df_copy["protein"] - protein)
-    if fat:
-        df_copy["nutrition_score"] += abs(df_copy["fat"] - fat)
-    if carbs:
-        df_copy["nutrition_score"] += abs(df_copy["carbohydrates"] - carbs)
-
-    best_matches = df_copy.sort_values("nutrition_score").head(top_n)
-    return best_matches[[
-        "recipe_name", "calories", "protein", "fat", "carbohydrates",
-        "cuisine_type", "region_type", "veg_nonveg", "image_url"
-    ]]
+df["ingredients_list"] = df["ingredients_list"].astype(str)
+tfidf = TfidfVectorizer(stop_words='english')
+tfidf_matrix = tfidf.fit_transform(df["ingredients_list"])
 
 
-pairing_rules = {
-    'burger': ['fries','coke','ice cream'],
-    'pizza': ['garlic bread','coke','salad'],
-    'biryani': ['raita','gulab jamun','lassi'],
-    'pasta': ['garlic bread','juice','brownie'],
-}
+def extract_main_dishes(df, min_freq=2):
+    stopwords = {"with", "and", "in", "the", "recipe", "style", "dish", "homemade", "easy"}
+    all_words = []
+    for name in df['recipe_name'].str.lower():
+        words = re.findall(r'\b\w+\b', name)
+        words = [w for w in words if w not in stopwords]
+        all_words.extend(words)
+    word_counts = Counter(all_words)
+    main_dishes = [word for word, count in word_counts.items() if count >= min_freq]
+    return main_dishes
 
-def recommend_pair(food_name, top_n=5):
-    all_recipes = df['recipe_name'].str.lower().tolist()
-    best_match, score, _ = process.extractOne(food_name.lower(), all_recipes)
-    base_recipe = df[df['recipe_name'].str.lower() == best_match]
-
-    cuisine = base_recipe['cuisine_type'].values[0]
-    region = base_recipe['region_type'].values[0]
-    vegtype = base_recipe['veg_nonveg'].values[0]
-
-    df_pair = df[
-        (df['cuisine_type'] == cuisine) &
-        (df['region_type'] == region) &
-        (df['veg_nonveg'] == vegtype)
-    ]
-
-    if df_pair.empty:
-        df_pair = df.sample(top_n)
-    else:
-        df_pair = df_pair.sample(min(top_n, len(df_pair)))
-
-    return df_pair[[
-        "recipe_name", "cuisine_type", "region_type", "veg_nonveg",
-        "aver_rate", "image_url"
-    ]]
+DYNAMIC_MAIN_DISHES = extract_main_dishes(df)
 
 
-# --------
 @app.get("/")
-def home():
-    return {"message": "🍴 Food Recommendation API is running successfully!"}
-
+def home(): 
+    return {"message":"🍴 Food Recommendation API is running!"}
 
 @app.get("/recommend")
-def recommend_food_advanced(
-    food_name: Optional[str] = Query(None, description="Food name or ingredient"),
-    veg_nonveg: Optional[str] = Query(None, description="Veg or Non-Veg"),
-    cuisine_type: Optional[str] = Query(None, description="Cuisine type"),
-    region_type: Optional[str] = Query(None, description="Region type"),
-    min_calories: Optional[float] = Query(0, description="Minimum calories"),
-    max_calories: Optional[float] = Query(2000, description="Maximum calories")
-):
+def recommend_food_dynamic(food_name: Optional[str]=Query(None),
+                            veg_nonveg: Optional[str]=Query(None),
+                            cuisine_type: Optional[str]=Query(None),
+                            region_type: Optional[str]=Query(None)):
     try:
         df_filtered = df.copy()
+        searched_recipe = None
+        main_dish = None
+        secondary_words = []
 
-        
+        if food_name:
+            food_name_lower = food_name.lower()
+            words = food_name_lower.split()
+
+            for word in words:
+                if word in DYNAMIC_MAIN_DISHES:
+                    main_dish = word
+                    break
+            secondary_words = [w for w in words if w != main_dish] if main_dish else words
+
+            match_result = process.extractOne(food_name_lower, df['recipe_name'].str.lower().tolist())
+            if match_result:
+                best_match = match_result[0]
+                searched_idx = df.index[df["recipe_name"].str.lower() == best_match][0]
+                searched_recipe = df.loc[searched_idx]
+            else:
+                return {"message": f"No recipe found similar to '{food_name}'."}
+
         if veg_nonveg:
             df_filtered = df_filtered[df_filtered["veg_nonveg"].str.lower() == veg_nonveg.lower()]
         if cuisine_type:
@@ -191,65 +143,104 @@ def recommend_food_advanced(
         if region_type:
             df_filtered = df_filtered[df_filtered["region_type"].str.lower() == region_type.lower()]
 
-        df_filtered = df_filtered[
-            (df_filtered["calories"] >= min_calories) & (df_filtered["calories"] <= max_calories)
-        ]
-
         if df_filtered.empty:
-            return {"message": "No recipes found with the given filters."}
+            df_filtered = df.copy()
 
-        
-        if food_name:
-            df_filtered = df_filtered.reset_index(drop=True)
-            tfidf = TfidfVectorizer(stop_words="english")
-            tfidf_matrix = tfidf.fit_transform(df_filtered["combined_text"])
-            cosine_sim = cosine_similarity(tfidf_matrix, tfidf_matrix)
+        if food_name and searched_recipe is not None:
+            tfidf_filtered = tfidf.transform(df_filtered["ingredients_list"])
+            cosine_sim = linear_kernel(tfidf_matrix[searched_idx], tfidf_filtered).flatten()
+            df_filtered = df_filtered.copy()
+            df_filtered["similarity"] = cosine_sim
 
-            match = df_filtered[df_filtered["recipe_name"].str.lower().str.contains(food_name.lower())]
-            if match.empty:
-                return {"message": f"No recipe found similar to '{food_name}'."}
+            if main_dish:
+                pattern = rf'\b{re.escape(main_dish)}\b'
+                df_filtered["similarity"] += df_filtered["recipe_name"].str.lower().apply(
+                    lambda x: 3.0 if re.search(pattern, x) else 0
+                )
 
-            match_idx = match.index[0]
-            sim_scores = list(enumerate(cosine_sim[match_idx]))
-            sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)[1:8]
-            indices = [i[0] for i in sim_scores]
-            results = df_filtered.iloc[indices]
+            for word in secondary_words:
+                pattern = rf'\b{re.escape(word)}\b'
+                df_filtered["similarity"] += df_filtered["recipe_name"].str.lower().apply(
+                    lambda x: 1.0 if re.search(pattern, x) else 0
+                )
+
+            if main_dish in ["dosa","idli"]:
+                df_filtered["similarity"] += df_filtered["cuisine_type"].str.lower().apply(
+                    lambda x: 0.5 if x == "south indian" else 0
+                )
+
+            df_filtered = df_filtered.sort_values(by="similarity", ascending=False)
+
+            if searched_recipe['recipe_id'] not in df_filtered['recipe_id'].values:
+                df_filtered = pd.concat([searched_recipe.to_frame().T, df_filtered], ignore_index=True)
+
+            results = df_filtered.head(7)
         else:
-            
             results = df_filtered.sample(min(6, len(df_filtered)))
 
-        return results[[
-            "recipe_name", "calories", "protein", "fat", "carbohydrates",
-            "veg_nonveg", "cuisine_type", "region_type", "image_url"
-        ]].to_dict(orient="records")
+        return results[["recipe_name","calories","protein","fat","carbohydrates",
+                        "veg_nonveg","cuisine_type","region_type","image_url"]].to_dict(orient="records")
 
     except Exception as e:
         return {"error": str(e)}
 
 
-@app.get("/recommend_by_url")
-def recommend_by_url_endpoint(image_url: str):
-    recommendations = recommend_food(image_url, by='url')
-    return recommendations.to_dict(orient='records')
 
+
+def nutrition_recommendations(calories: Optional[float]=None, protein: Optional[float]=None, fat: Optional[float]=None, carbs: Optional[float]=None, top_n: int=5):
+    input_values = np.array([[calories if calories else 0, 
+                              protein if protein else 0, 
+                              fat if fat else 0, 
+                              carbs if carbs else 0]])
+    input_scaled = scaler.transform(input_values)
+    distances = euclidean_distances(input_scaled, X_scaled).flatten()
+    similar_indices = np.argsort(distances)[:top_n]
+    return df.iloc[similar_indices][["recipe_name","calories","protein","fat","carbohydrates"]].to_dict(orient="records")
 
 @app.get("/recommend_by_nutrition")
-def recommend_by_nutrition_endpoint(
-    calories: Optional[int] = Query(None),
-    protein: Optional[int] = Query(None),
-    fat: Optional[int] = Query(None),
-    carbs: Optional[int] = Query(None)
-):
-    recommendations = recommend_by_nutrition(calories, protein, fat, carbs)
-    return recommendations.to_dict(orient='records')
+def recommend_by_nutrition_endpoint(calories: Optional[float]=Query(None),
+                                    protein: Optional[float]=Query(None),
+                                    fat: Optional[float]=Query(None),
+                                    carbs: Optional[float]=Query(None),
+                                    top_n: int = 5):
+    try:
+        return nutrition_recommendations(calories, protein, fat, carbs, top_n)
+    except Exception as e:
+        return {"error": str(e)}
 
+def recommend_pair(food_name: str, top_n: int = 5):
+    best_match, _, _ = process.extractOne(food_name.lower(), df['recipe_name'].str.lower().tolist())
+    if not best_match:
+        return {"error": f"No close match found for '{food_name}'"}
+    base = df[df['recipe_name'].str.lower()==best_match]
+    cuisine, region, vegtype = base['cuisine_type'].values[0], base['region_type'].values[0], base['veg_nonveg'].values[0]
+    df_pair = df[(df['cuisine_type']==cuisine) & (df['region_type']==region) & (df['veg_nonveg']==vegtype)]
+    if df_pair.empty: df_pair = df.sample(min(top_n,len(df)))
+    else: df_pair = df_pair.sample(min(top_n,len(df_pair)))
+    return df_pair[["recipe_name","cuisine_type","region_type","veg_nonveg","aver_rate","image_url"]].to_dict(orient='records')
 
 @app.get("/recommend_pair")
 def recommend_pair_endpoint(food_name: str):
-    recommendations = recommend_pair(food_name)
-    return recommendations.to_dict(orient='records')
+    try:
+        return recommend_pair(food_name)
+    except Exception as e:
+        return {"error": str(e)}
 
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("app:app", host="0.0.0.0", port=port)
+@app.get("/top_dishes")
+def top_dishes(region_type: Optional[str]=Query(None), cuisine_type: Optional[str]=Query(None), top_n: int=5):
+    try:
+        df_filtered = df.copy()
+        if region_type:
+            df_filtered = df_filtered[df_filtered["region_type"].str.lower() == region_type.lower()]
+        if cuisine_type:
+            df_filtered = df_filtered[df_filtered["cuisine_type"].str.lower() == cuisine_type.lower()]
+        if df_filtered.empty:
+            return {"message":"No dishes found for given filters."}
+        df_filtered = df_filtered.sort_values(by="aver_rate", ascending=False)
+        return df_filtered.head(top_n)[["recipe_name","veg_nonveg","cuisine_type","region_type","aver_rate","image_url"]].to_dict(orient="records")
+    except Exception as e:
+        return {"error": str(e)}
+
+if __name__=="__main__":
+    uvicorn.run("app:app", host="0.0.0.0", port=int(os.environ.get("PORT",8000)))
