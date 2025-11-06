@@ -3,7 +3,7 @@ import re
 import numpy as np
 import pandas as pd
 from collections import Counter
-from typing import Optional
+from typing import Optional  # ✅ FIXED: added Optional import
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from rapidfuzz import fuzz, process
@@ -15,6 +15,7 @@ from datetime import datetime
 import uvicorn
 
 app = FastAPI(title="Food Recommendation System")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,16 +23,20 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+# Load dataset
 df = pd.read_csv("final_recipe.csv")
 
+# --- Data Cleaning ---
 nutrition_features = ['calories', 'protein', 'fat', 'carbohydrates']
 df[nutrition_features] = df[nutrition_features].fillna(df[nutrition_features].mean())
 
+# --- Nutrition-based Clustering ---
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(df[nutrition_features])
 kmeans = KMeans(n_clusters=8, random_state=42)
 df['nutrition_cluster'] = kmeans.fit_predict(X_scaled)
 
+# --- Veg/Non-Veg Detection ---
 nonveg_keywords = [
     'chicken','mutton','egg','fish','pork','beef','bacon',
     'meat','turkey','lamb','shrimp','crab','prawn','ham','sausage'
@@ -43,6 +48,7 @@ df["veg_nonveg"] = df.apply(
     axis=1
 )
 
+# --- Cuisine Classification ---
 cuisine_keywords = {
     'Indian': ['paneer','masala','biryani','dal','curry','roti','paratha','tikka','idli','dosa','sabzi','korma','pulao','kachori'],
     'Chinese': ['noodle','fried rice','manchurian','schezwan','spring roll','momo','chowmein'],
@@ -63,6 +69,7 @@ def detect_cuisine(name, ingredients):
 
 df["cuisine_type"] = df.apply(lambda x: detect_cuisine(x["recipe_name"], x["ingredients_list"]), axis=1)
 
+# --- Region Classification ---
 region_keywords = {
     'North Indian': ['paneer','butter chicken','naan','dal makhani','paratha','chole','rajma','korma'],
     'South Indian': ['idli','dosa','sambar','rasam','pongal','uttapam','curd rice'],
@@ -78,10 +85,12 @@ def detect_region(name, ingredients):
 
 df["region_type"] = df.apply(lambda x: detect_region(x["recipe_name"], x["ingredients_list"]), axis=1)
 
+# --- TF-IDF Feature Extraction ---
 df["ingredients_list"] = df["ingredients_list"].astype(str)
 tfidf = TfidfVectorizer(stop_words='english')
 tfidf_matrix = tfidf.fit_transform(df["ingredients_list"])
 
+# --- Weighted Score Calculation ---
 if "aver_rate" in df.columns and "review_nums" in df.columns:
     C = df["aver_rate"].mean()
     m = df["review_nums"].quantile(0.60)
@@ -92,9 +101,12 @@ if "aver_rate" in df.columns and "review_nums" in df.columns:
 else:
     df["weighted_score"] = np.random.uniform(3.0, 4.5, len(df))
 
+# --- Routes ---
+
 @app.get("/")
 def home():
     return {"message": "🍴 Food Recommendation API is running!"}
+
 
 @app.get("/recommend")
 def recommend_food_dynamic(food_name: Optional[str]=Query(None),
@@ -104,14 +116,12 @@ def recommend_food_dynamic(food_name: Optional[str]=Query(None),
     try:
         df_filtered = df.copy()
         searched_idx = None
-        searched_recipe = None
 
         if food_name:
             match_result = process.extractOne(food_name.lower(), df['recipe_name'].str.lower().tolist())
             if match_result:
                 best_match = match_result[0]
                 searched_idx = df.index[df["recipe_name"].str.lower() == best_match][0]
-                searched_recipe = df.loc[searched_idx]
 
         if veg_nonveg:
             df_filtered = df_filtered[df_filtered["veg_nonveg"].str.lower() == veg_nonveg.lower()]
@@ -141,6 +151,7 @@ def recommend_food_dynamic(food_name: Optional[str]=Query(None),
     except Exception as e:
         return {"error": str(e)}
 
+
 def get_current_season():
     month = datetime.now().month
     if month in [3, 4, 5]:
@@ -151,6 +162,7 @@ def get_current_season():
         return "monsoon"
     else:
         return "winter"
+
 
 @app.get("/recommend_by_season")
 def recommend_by_season(season: Optional[str] = Query(None), top_n: int = 7):
@@ -185,6 +197,7 @@ def recommend_by_season(season: Optional[str] = Query(None), top_n: int = 7):
     except Exception as e:
         return {"error": str(e)}
 
+
 @app.get("/recommend_by_nutrition")
 def recommend_by_nutrition(calories: Optional[float]=Query(None),
                            protein: Optional[float]=Query(None),
@@ -202,6 +215,7 @@ def recommend_by_nutrition(calories: Optional[float]=Query(None),
     except Exception as e:
         return {"error": str(e)}
 
+
 @app.get("/recommend_pair")
 def recommend_pair(food_name: str, top_n: int = 5):
     try:
@@ -216,6 +230,7 @@ def recommend_pair(food_name: str, top_n: int = 5):
         return df_pair[["recipe_name","cuisine_type","region_type","veg_nonveg","weighted_score","image_url"]].to_dict(orient='records')
     except Exception as e:
         return {"error": str(e)}
+
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
